@@ -87,6 +87,16 @@ class ConfigKeys(object):
             gcloud_project, gcloud_zone, gcloud_region, gcloud_vpc, gcloud_sub_vpc,
             gcloud_filestore, gcloud_fs_mount]
 
+    required_keys = [deployment,
+                     gcloud_user,
+                     gcloud_project,
+                     gcloud_zone,
+                     gcloud_region,
+                     gcloud_vpc,
+                     gcloud_sub_vpc,
+                     gcloud_filestore,
+                     gcloud_fs_mount]
+
 
 
 class Config(object):
@@ -133,6 +143,7 @@ class Config(object):
                     value = ""
                 print("{:16s}  : {}".format(key,value))
         print("-----------------------------------------------------------------")
+        self.validate()
 
 
     def __getitem__(self, key):
@@ -141,6 +152,22 @@ class Config(object):
 
     def __setitem__(self, key, value):
         self.context[key] = value
+
+
+    def validate(self):
+        errors = []
+        for key in ConfigKeys.required_keys:
+            if not key in self.context:
+                errors.append("The setting: {} must be set in the configuration".format(key))
+            elif self.context[key] is None:
+                errors.append("The setting: {} must be set in the configuration".format(key))
+
+        if errors:
+            print("\nConfiguration is not complete:")
+            for index,error in enumerate(errors):
+                print("  {:02d}: {}".format(index,error))
+            print("\n")
+            sys.exit(1)
 
 
 
