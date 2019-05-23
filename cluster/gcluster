@@ -27,14 +27,48 @@ from argparse import ArgumentParser, ArgumentTypeError
 #
 # About the slurm-gcp code
 # ========================
-# When actually instantiating the gcloud deployment which starts the slurm ...
+
+# When actually instantiating the gcloud deployment which starts the slurm
+# cluster on the google computing infrastructure needs *filesystem access* to a
+# slurm-gcp repository; in this script that is solved by doing a chdir( ) to
+# the location of a local slurm-gcp repository. Either you can point the script
+# to an existing repository available in your local filesystem, or
+# alternatively the script will clone a new slurm-gcp in a temporary location.
 #
 #
 # About configuration
 # ===================
 #
+# The script needs some configuration settings. The keys available for setting
+# are those listed in the ConfigKeys class below. These can be entered in
+# multiple ways:
 #
-
+#   Default value: Many of the settings have default values which are hardcoded
+#      in this script.
+#
+#   Config file: Using the commandline option --config-file=filename.yml you
+#      can pass a yml formatted configuration file to the script. The
+#      configuration file is a flat list of key: value pairs, i.e. to set the
+#      gcloud username, project and zone you could use a config file like this:
+#
+#      gcloud_user: jon.doe@gmail.com
+#      gcloud_project: jon-testing-flow
+#      gcloud_zone: us-central1-c
+#
+#   Environment variables: It is possible to set the variables using
+#      environment variables, the corresponding environment is the ALL_CAPS
+#      version of the config setting, i.e.
+#
+#      bash% export GCLOUD_USER=jon.doe@gmail.com
+#
+#   commandline options: The various options can also be set with commandline
+#      options, the corresponding commandline option is prefixed with '--' and
+#      '_' is replaced with '-':
+#
+#      bash% gcluster --gcloud-user=jon-doe@gmail.com
+#
+# The settings are applied in the order listed here, i.e. the commandline
+# options take ultimate priority.
 
 # The yaml package is the only non-standard package used in this script,
 # the package will only be used if a a configuration file is specified on
@@ -49,8 +83,8 @@ except:
 # Default values
 SLURM_GCP_URL = "https://github.com/datagr/slurm-gcp"
 SLURM_GCP_REF = "opm"
-SLURM_GCP_ROOT = None
 SLURM_DEPLOYMENT = "slurm"
+
 GCLOUD_ZONE = "us-central1-c"
 GCLOUD_REGION = "us-central1"
 GCLOUD_VPC = "slurm-network-vpc"
@@ -58,18 +92,12 @@ GCLOUD_VPC_SUB = "slurm-network"
 GCLOUD_FILESTORE = ["filestore-01", "filestore-02"]
 GCLOUD_FS_MOUNT = ["home", "apps"]
 
-GCLOUD_USER = None
-GCLOUD_PROJECT = None
-
-GCLOUD_USER = "joakim.hove@gmail.com"
-GCLOUD_PROJECT = "gflow-test"
-
 
 class ConfigKeys(object):
     slurm_gcp_url = "slurm_gcp_url"
     slurm_gcp_ref = "slurm_gcp_ref"
     slurm_gcp_root = "slurm_gcp_root"
-    deployment = "slurm"
+    slurm_deployment = "slurm_deployment"
     gcloud_user = "gcloud_user"
     gcloud_project = "gcloud_project"
     gcloud_zone = "gcloud_zone"
@@ -81,13 +109,20 @@ class ConfigKeys(object):
 
 
     env_variables = {gcloud_user : "GCLOUD_USER",
-                     gcloud_project : "GCLOUD_PROJECT"}
+                     gcloud_project : "GCLOUD_PROJECT"
+                     gcloud_zone: "GCLOUD_ZONE",
+                     gcloud_region: "GCLOUD_REGION",
+                     gcloud_vpc: "GCLOUD_VPC",
+                     gcloud_sub_vpc: "GCLOUD_SUB_VPC"
+                     gcloud_filestore: "GCLOUD_FILESTORE"
+                     gcloud_fs_mount: "GCLOUD_FS_MOUNT"}
 
-    keys = [slurm_gcp_ref, slurm_gcp_url, slurm_gcp_root, deployment, gcloud_user,
+
+    keys = [slurm_gcp_ref, slurm_gcp_url, slurm_gcp_root, slurm_deployment, gcloud_user,
             gcloud_project, gcloud_zone, gcloud_region, gcloud_vpc, gcloud_sub_vpc,
             gcloud_filestore, gcloud_fs_mount]
 
-    required_keys = [deployment,
+    required_keys = [slurm_deployment,
                      gcloud_user,
                      gcloud_project,
                      gcloud_zone,
@@ -105,8 +140,8 @@ class Config(object):
         # 1: Script defaults
         self.context = {ConfigKeys.slurm_gcp_ref    : SLURM_GCP_REF,
                         ConfigKeys.slurm_gcp_url    : SLURM_GCP_URL,
-                        ConfigKeys.slurm_gcp_root   : SLURM_GCP_ROOT,
-                        ConfigKeys.deployment       : SLURM_DEPLOYMENT,
+                        ConfigKeys.slurm_gcp_root   : None,
+                        ConfigKeys.slurm_deployment : SLURM_DEPLOYMENT,
                         ConfigKeys.gcloud_user      : None,
                         ConfigKeys.gcloud_project   : None,
                         ConfigKeys.gcloud_zone      : GCLOUD_ZONE,
@@ -239,7 +274,7 @@ class StartCommands(Commands):
                                              nfs_apps_ip = self.config["nfs_apps_ip"]))
 
         self.run_cmd("gcloud -q deployment-manager deployments --project={project} create {deployment} --config {config_file}".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                      deployment = self.config[ConfigKeys.deployment],
+                                                                                                                                      deployment = self.config[ConfigKeys.slurm_deployment],
                                                                                                                                       config_file = config_file))
 
 
@@ -278,7 +313,7 @@ class StopCommands(Commands):
 
     def stop_slurm(self):
         self.run_cmd("gcloud -q deployment-manager deployments --project={project} delete {deployment}".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                               deployment = self.config[ConfigKeys.deployment]))
+                                                                                                               deployment = self.config[ConfigKeys.slurm_deployment]))
 
 
     def run(self):
