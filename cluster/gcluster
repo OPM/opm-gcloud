@@ -1,0 +1,522 @@
+#!/usr/bin/env python
+import subprocess
+import sys
+import os
+import tempfile
+import shlex
+import shutil
+import random
+import datetime
+from contextlib import contextmanager
+from argparse import ArgumentParser, ArgumentTypeError
+
+# The gcluster script is used to assemble and dismantle a slurm cluster based
+# on google cloud resources. The script is based on the slurm-gcp project from
+# http://github.com/SchedMD/slurm-gcp with some modifications/extensions:
+#
+# 1. The slurm-gcp code is based on a script scrips/startup-script.py which
+#    does initial setup of the compute nodes and controller nodes. To run
+#    ensure that opm/flow is installed we use a slightly patched version of the
+#    slurm-gcp repository.
+#
+# 2. The code in the slurm-gcp repository does not yet have support for NFS
+#    volumes shared among the various compute nodes which together constitute a
+#    cluster. The main purpose of this script is to setup such NFS shares, and
+#    then finally start up slurm.
+#
+#
+# About the slurm-gcp code
+# ========================
+
+# When actually instantiating the gcloud deployment which starts the slurm
+# cluster on the google computing infrastructure needs *filesystem access* to a
+# slurm-gcp repository; in this script that is solved by doing a chdir( ) to
+# the location of a local slurm-gcp repository. Either you can point the script
+# to an existing repository available in your local filesystem, or
+# alternatively the script will clone a new slurm-gcp in a temporary location.
+#
+#
+# About configuration
+# ===================
+#
+# The script needs some configuration settings. The keys available for setting
+# are those listed in the ConfigKeys class below. These can be entered in
+# multiple ways:
+#
+#   Default value: Many of the settings have default values which are hardcoded
+#      in this script.
+#
+#   Config file: Using the commandline option --config-file=filename.yml you
+#      can pass a yml formatted configuration file to the script. The
+#      configuration file is a flat list of key: value pairs, i.e. to set the
+#      gcloud username, project and zone you could use a config file like this:
+#
+#      gcloud_user: jon.doe@gmail.com
+#      gcloud_project: jon-testing-flow
+#      gcloud_zone: us-central1-c
+#
+#   Environment variables: It is possible to set the variables using
+#      environment variables, the corresponding environment is the ALL_CAPS
+#      version of the config setting, i.e.
+#
+#      bash% export GCLOUD_USER=jon.doe@gmail.com
+#
+#   commandline options: The various options can also be set with commandline
+#      options, the corresponding commandline option is prefixed with '--' and
+#      '_' is replaced with '-':
+#
+#      bash% gcluster --gcloud-user=jon-doe@gmail.com
+#
+# The settings are applied in the order listed here, i.e. the commandline
+# options take ultimate priority.
+
+# The yaml package is the only non-standard package used in this script,
+# the package will only be used if a a configuration file is specified on
+# the command line - we therefor postpone the meltdown until the yaml
+# package is actually needed.
+try:
+    import yaml
+except:
+    yaml = None
+
+
+# Default values
+SLURM_GCP_URL = "https://github.com/datagr/slurm-gcp"
+SLURM_GCP_REF = "opm"
+SLURM_DEPLOYMENT = "slurm"
+
+GCLOUD_ZONE = "us-central1-c"
+GCLOUD_REGION = "us-central1"
+GCLOUD_VPC = "slurm-network-vpc"
+GCLOUD_VPC_SUB = "slurm-network"
+GCLOUD_FILESTORE = ["filestore-01", "filestore-02"]
+GCLOUD_FS_MOUNT = ["home", "apps"]
+
+
+class ConfigKeys(object):
+    slurm_gcp_url = "slurm_gcp_url"
+    slurm_gcp_ref = "slurm_gcp_ref"
+    slurm_gcp_root = "slurm_gcp_root"
+    slurm_deployment = "slurm_deployment"
+    gcloud_user = "gcloud_user"
+    gcloud_project = "gcloud_project"
+    gcloud_zone = "gcloud_zone"
+    gcloud_region = "gcloud_region"
+    gcloud_vpc = "gcloud_vpc"
+    gcloud_sub_vpc = "gcloud_sub_vpc"
+    gcloud_filestore = "gcloud_filestore"
+    gcloud_fs_mount = "gcloud_fs_mount"
+
+
+    env_variables = {gcloud_user : "GCLOUD_USER",
+                     gcloud_project : "GCLOUD_PROJECT"
+                     gcloud_zone: "GCLOUD_ZONE",
+                     gcloud_region: "GCLOUD_REGION",
+                     gcloud_vpc: "GCLOUD_VPC",
+                     gcloud_sub_vpc: "GCLOUD_SUB_VPC"
+                     gcloud_filestore: "GCLOUD_FILESTORE"
+                     gcloud_fs_mount: "GCLOUD_FS_MOUNT"}
+
+
+    keys = [slurm_gcp_ref, slurm_gcp_url, slurm_gcp_root, slurm_deployment, gcloud_user,
+            gcloud_project, gcloud_zone, gcloud_region, gcloud_vpc, gcloud_sub_vpc,
+            gcloud_filestore, gcloud_fs_mount]
+
+    required_keys = [slurm_deployment,
+                     gcloud_user,
+                     gcloud_project,
+                     gcloud_zone,
+                     gcloud_region,
+                     gcloud_vpc,
+                     gcloud_sub_vpc,
+                     gcloud_filestore,
+                     gcloud_fs_mount]
+
+
+
+class Config(object):
+
+    def __init__(self, config_file, slurm_gcp_root):
+        # 1: Script defaults
+        self.context = {ConfigKeys.slurm_gcp_ref    : SLURM_GCP_REF,
+                        ConfigKeys.slurm_gcp_url    : SLURM_GCP_URL,
+                        ConfigKeys.slurm_gcp_root   : None,
+                        ConfigKeys.slurm_deployment : SLURM_DEPLOYMENT,
+                        ConfigKeys.gcloud_user      : None,
+                        ConfigKeys.gcloud_project   : None,
+                        ConfigKeys.gcloud_zone      : GCLOUD_ZONE,
+                        ConfigKeys.gcloud_region    : GCLOUD_REGION,
+                        ConfigKeys.gcloud_vpc       : GCLOUD_VPC,
+                        ConfigKeys.gcloud_sub_vpc   : GCLOUD_VPC_SUB,
+                        ConfigKeys.gcloud_filestore : GCLOUD_FILESTORE,
+                        ConfigKeys.gcloud_fs_mount  : GCLOUD_FS_MOUNT}
+
+        # 2: From environment variables
+        for key,var in ConfigKeys.env_variables.items():
+            if var in os.environ:
+                self.context[key] = os.environ[var]
+
+        # 3: From config file
+        if config_file and os.path.isfile(config_file):
+            if yaml is None:
+                sys.exit("Sorry - when specifying a config file you must install the yaml package")
+
+            config_data = yaml.safe_load(open(config_file))
+            for key in ConfigKeys.keys:
+                if key in config_data:
+                    self.context[key] = config_data[key]
+
+        # 4: The slurm-gcp root can be set from commandline
+        if slurm_gcp_root:
+            self.context[ConfigKeys.slurm_gcp_root] = slurm_gcp_root
+
+        print("-----------------------------------------------------------------")
+        for key in ConfigKeys.keys:
+            if key in self.context:
+                value = self.context[key]
+                if value is None:
+                    value = ""
+                print("{:16s}  : {}".format(key,value))
+        print("-----------------------------------------------------------------")
+        self.validate()
+
+
+    def __getitem__(self, key):
+        return self.context[key]
+
+
+    def __setitem__(self, key, value):
+        self.context[key] = value
+
+
+    def validate(self):
+        errors = []
+        for key in ConfigKeys.required_keys:
+            if not key in self.context:
+                errors.append("The setting: {} must be set in the configuration".format(key))
+            elif self.context[key] is None:
+                errors.append("The setting: {} must be set in the configuration".format(key))
+
+        if errors:
+            print("\nConfiguration is not complete:")
+            for index,error in enumerate(errors):
+                print("  {:02d}: {}".format(index,error))
+            print("\n")
+            sys.exit(1)
+
+
+
+class Commands(object):
+
+    def __init__(self, config):
+        self.config = config
+
+    @staticmethod
+    def run_cmd(cmd_string, verbose = False):
+        if verbose:
+            print(cmd_string)
+
+        try:
+            stdout = subprocess.check_output( shlex.split(cmd_string) )
+        except subprocess.CalledProcessError:
+            stdout = ""
+        return stdout
+
+
+
+class StartCommands(Commands):
+
+
+    def vpc(self):
+        self.run_cmd("gcloud -q compute --project={project} networks create {vpc} --description=\"slurm network vpc\" --subnet-mode=custom".format( project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                    vpc = self.config[ConfigKeys.gcloud_vpc]))
+
+        self.run_cmd("gcloud -q compute --project={project} networks subnets create {sub_vpc} --network={vpc} --region={region}  --range=10.10.0.0/16 --enable-private-ip-google-access".format( project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                                                                 sub_vpc = self.config[ConfigKeys.gcloud_sub_vpc],
+                                                                                                                                                                                                 vpc = self.config[ConfigKeys.gcloud_vpc],
+                                                                                                                                                                                                 region = self.config[ConfigKeys.gcloud_region] ))
+
+
+    def fw(self):
+        self.run_cmd("gcloud -q compute --project={project} firewall-rules create slurm-fw-private --network {vpc} --allow tcp,udp,icmp --source-ranges 10.10.0.0/16".format(project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                                             vpc = self.config[ConfigKeys.gcloud_vpc]))
+
+        self.run_cmd("gcloud -q compute --project={project} firewall-rules create slurm-fw-outside --network {vpc} --allow tcp:22,tcp:3389,icmp".format(project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                          vpc = self.config[ConfigKeys.gcloud_vpc]))
+
+
+    def filestore(self):
+        for fs,fs_name in zip(self.config[ConfigKeys.gcloud_filestore], self.config[ConfigKeys.gcloud_fs_mount]):
+            self.run_cmd("gcloud -q beta filestore instances create {filestore} --project={project} --zone={zone} --tier=STANDARD --file-share=name={name},capacity=1TB --network=name={vpc}".format(filestore = fs,
+                                                                                                                                                                                                     project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                                                                     zone = self.config[ConfigKeys.gcloud_zone],
+                                                                                                                                                                                                     name=fs_name,
+                                                                                                                                                                                                     vpc = self.config[ConfigKeys.gcloud_vpc]))
+        # Get IP address of file storage
+        for fs,fs_name in zip(self.config[ConfigKeys.gcloud_filestore], self.config[ConfigKeys.gcloud_fs_mount]):
+            ip = self.run_cmd("gcloud beta filestore instances describe {filestore} --project={project} --zone={zone}  --format='value(networks.ipAddresses[0])'".format(filestore = fs,
+                                                                                                                                                                         project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                                         zone = self.config[ConfigKeys.gcloud_zone]))
+            self.config["nfs_{}_ip".format(fs_name)] = ip
+
+
+    def deploy_slurm(self):
+        today = datetime.date.today()
+        config_file = "slurm-config-%4d-%02d-%0d.%08d.yml" % (today.year, today.month, today.day, random.randint(0, 9999999))
+        print("Using config file: {}".format(config_file))
+        with open(config_file, "w") as f:
+            f.write(config_template().format(zone = self.config[ConfigKeys.gcloud_zone],
+                                             region = self.config[ConfigKeys.gcloud_region],
+                                             vpc = self.config[ConfigKeys.gcloud_vpc],
+                                             sub_vpc = self.config[ConfigKeys.gcloud_sub_vpc],
+                                             user = self.config[ConfigKeys.gcloud_user],
+                                             nfs_home_ip = self.config["nfs_home_ip"],
+                                             nfs_apps_ip = self.config["nfs_apps_ip"]))
+
+        self.run_cmd("gcloud -q deployment-manager deployments --project={project} create {deployment} --config {config_file}".format(project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                      deployment = self.config[ConfigKeys.slurm_deployment],
+                                                                                                                                      config_file = config_file))
+
+
+
+
+    def run(self):
+        self.vpc()
+        self.fw()
+        self.filestore()
+        self.deploy_slurm()
+
+
+class StopCommands(Commands):
+
+    def vpc(self):
+        self.run_cmd("gcloud -q compute --project={project} networks subnets delete {sub_vpc} --region={region}".format(project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                        sub_vpc = self.config[ConfigKeys.gcloud_sub_vpc],
+                                                                                                                        region  = self.config[ConfigKeys.gcloud_region]))
+
+        self.run_cmd("gcloud -q compute --project={project} networks delete {vpc}".format(project=self.config[ConfigKeys.gcloud_project],
+                                                                                          vpc = self.config[ConfigKeys.gcloud_vpc]))
+
+
+    def fw(self):
+        fwlist = self.run_cmd("gcloud -q compute --project={project} firewall-rules list --filter network={vpc} --sort-by priority --format='value(name)'".format(project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                                  vpc = self.config[ConfigKeys.gcloud_vpc]))
+        for fw in fwlist.split():
+            self.run_cmd("gcloud -q compute --project={project} firewall-rules delete {fw}".format(fw = fw,
+                                                                                                   project = self.config[ConfigKeys.gcloud_project]))
+
+    def filestore(self):
+        for fs in self.config[ConfigKeys.gcloud_filestore]:
+            self.run_cmd("gcloud -q beta filestore instances delete {fs} --project={project} --zone={zone}".format(fs = fs,
+                                                                                                                   project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                   zone = self.config[ConfigKeys.gcloud_zone]))
+
+    def stop_slurm(self):
+        self.run_cmd("gcloud -q deployment-manager deployments --project={project} delete {deployment}".format(project = self.config[ConfigKeys.gcloud_project],
+                                                                                                               deployment = self.config[ConfigKeys.slurm_deployment]))
+
+
+    def run(self):
+        self.stop_slurm()
+        self.filestore()
+        self.fw()
+        self.vpc()
+
+
+
+def config_template():
+    template_string = """
+# Copyright 2017 SchedMD LLC.
+# Modified for use with the Slurm Resource Manager.
+#
+# Copyright 2015 Google Inc. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# [START cluster_yaml]
+imports:
+- path: slurm.jinja
+
+resources:
+- name: slurm-cluster
+  type: slurm.jinja
+  properties:
+    cluster_name            : gflow-01
+    static_node_count       : 0
+    max_node_count          : 100
+
+    zone                    : {zone}
+    region                  : {region}
+    cidr                    : 10.10.0.0/16
+
+    # Optional network configuration fields
+    # READ slurm.jinja.schema for prerequisites
+    vpc_net                 : {vpc}
+    vpc_subnet              : {sub_vpc}
+    #shared_vpc_host_proj    : < my-shared-vpc-project-name >
+
+    controller_machine_type : n1-standard-2
+    compute_machine_type    : n1-standard-16
+    login_machine_type      : n1-standard-2
+    login_node_count        : 1
+
+    # Optional compute configuration fields
+    #cpu_platform               : Intel Skylake
+    #preemptible_bursting       : False
+    #external_compute_ips       : False
+    #private_google_access      : True
+
+    #controller_disk_type       : pd-standard
+    controller_disk_size_gb    : 10
+    #controller_labels          :
+    #     key1 : value1
+    #     key2 : value2
+
+    #login_disk_type            : pd-standard
+    login_disk_size_gb         : 10
+    #login_labels               :
+    #     key1 : value1
+    #     key2 : value2
+
+    #compute_disk_type          : pd-standard
+    compute_disk_size_gb       : 10
+    #compute_labels             :
+    #     key1 : value1
+    #     key2 : value2
+
+    nfs_home_server            : {nfs_home_ip}
+    nfs_apps_server            : {nfs_apps_ip}
+
+    #controller_secondary_disk          : True
+    #controller_secondary_disk_type     : pd-standard
+    #controller_secondary_disk_size_gb  : 300
+
+    # Optional GPU configuration fields
+    #gpu_type                   : nvidia-tesla-v100
+    #gpu_count                  : 8
+
+    # Optional timer fields
+    #suspend_time               : 300
+
+    #default_users           : < GCP user email addr, comma separated >
+    #slurm_version           : 18.08-latest
+    #default_account         : default
+    slurm_version           : 18.08.5-2
+    default_users           : {user}
+
+#  [END cluster_yaml]
+
+    """
+    return template_string
+
+
+
+def assert_slurm_gcp(slurm_gcp_root):
+    # A short of files which we expect to find in the SLURM_GCP_ROOT
+    expected_files = ["scripts/startup-script.py",
+                      "slurm.jinja"]
+
+    if not os.path.isdir(slurm_gcp_root):
+        raise Exception("The slurm_gcp_root:{} setting does not point to an existing directory.".format(slurm_gcp_root))
+
+    for file in expected_files:
+        if not os.path.isfile( os.path.join( slurm_gcp_root, file )):
+            raise Exception("The slurm_gcp_root:{} does not seem to point to slurm-gcp repository")
+
+
+@contextmanager
+def pushd(path, delete=False):
+    org_cwd = os.getcwd()
+    if path:
+        os.chdir(path)
+
+    yield
+
+    os.chdir(org_cwd)
+    if delete:
+        shutil.rmtree(path)
+
+
+def isfile(fname):
+    try:
+        f = open(fname)
+    except IOError:
+        raise ArgumentTypeError("{} is not a file which can be opened for reading".format(fname))
+    return fname
+
+
+def isdir(dname):
+    if not os.path.isdir(dname):
+        raise ArgumentTypeError("{} is not a file which can be opened for reading".format(fname))
+    return dname
+
+
+
+def init_parser():
+    parser = ArgumentParser()
+    parser.add_argument("updown", choices=["start", "stop"])
+    parser.add_argument("--slurm-gcp-root", default=os.getenv("SLURM_GCP_ROOT"), type=str)
+    parser.add_argument("--slurm-gcp-output", type=isdir)
+    parser.add_argument("--config-file", type=isfile)
+    return parser
+
+
+
+if __name__ == "__main__":
+    parser = init_parser()
+    options = parser.parse_args(sys.argv[1:])
+    conf = Config(options.config_file, options.slurm_gcp_root)
+    if options.updown == "stop":
+        cmd_list = StopCommands(conf)
+        cmd_list.run()
+    else:
+        cmd_list = StartCommands(conf)
+        # If the cluster is being taken up we also need local access to a
+        # slurm-gcp repository, that can either be specified as the path to an
+        # existing slurm-gcp repository with the the --slurm-gcp-root
+        # commandline switch or alternatively a repository will be cloned using
+        # git, the url and reference to use can be specified with
+        # --slurm-gcp-url and --slurm-gcp-ref commandline switches. The
+        # temporary git repository will not be cleaned up afterwards.
+        #
+        # When the location of the slurm-gcp repository has been verified we do
+        # chdir() to the root of the repository, and the rest of the script
+        # execution takes place in that location.
+        if conf[ConfigKeys.slurm_gcp_root]:
+            root = conf[ConfigKeys.slurm_gcp_root]
+            assert_slurm_gcp(root)
+            print("Using existing slurm-gcp repository located in: {}".format(root))
+            with pushd(root):
+                cmd_list.run()
+        else:
+            slurm_gcp_url = conf[ConfigKeys.slurm_gcp_url]
+            slurm_gcp_ref = conf[ConfigKeys.slurm_gcp_ref]
+
+            if options.slurm_gcp_output:
+                path = options.slurm_gcp_output
+                delete = False
+            else:
+               path = tempfile.mkdtemp()
+               delete = True
+
+            with pushd(path, delete):
+                if delete:
+                    print("Creating temporary slurm-gcp repository in {}".format(path))
+                else:
+                    print("Cloning slurm-gcp to: {}".format(path))
+
+                Commands.run_cmd("git clone {}".format(slurm_gcp_url))
+                with pushd("slurm-gcp"):
+                    Commands.run_cmd("git checkout {}".format(slurm_gcp_ref))
+                    cmd_list.run()
+
