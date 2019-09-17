@@ -109,12 +109,12 @@ class ConfigKeys(object):
 
 
     env_variables = {gcloud_user : "GCLOUD_USER",
-                     gcloud_project : "GCLOUD_PROJECT"
+                     gcloud_project : "GCLOUD_PROJECT",
                      gcloud_zone: "GCLOUD_ZONE",
                      gcloud_region: "GCLOUD_REGION",
                      gcloud_vpc: "GCLOUD_VPC",
-                     gcloud_sub_vpc: "GCLOUD_SUB_VPC"
-                     gcloud_filestore: "GCLOUD_FILESTORE"
+                     gcloud_sub_vpc: "GCLOUD_SUB_VPC",
+                     gcloud_filestore: "GCLOUD_FILESTORE",
                      gcloud_fs_mount: "GCLOUD_FS_MOUNT"}
 
 
