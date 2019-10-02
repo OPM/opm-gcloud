@@ -170,14 +170,20 @@ class Config(object):
         if slurm_gcp_root:
             self.context[ConfigKeys.slurm_gcp_root] = slurm_gcp_root
 
-        print("-----------------------------------------------------------------")
+        print("---------------------------------------------------------------------------")
         for key in ConfigKeys.keys:
             if key in self.context:
                 value = self.context[key]
                 if value is None:
                     value = ""
-                print("{:16s}  : {}".format(key,value))
-        print("-----------------------------------------------------------------")
+
+                if key in ConfigKeys.env_variables:
+                    env_var = "[{}]".format(ConfigKeys.env_variables[key])
+                else:
+                    env_var = ""
+
+                print("{:20s}{:20s}  : {}".format(key,env_var,value))
+        print("---------------------------------------------------------------------------")
         self.validate()
 
 
@@ -247,16 +253,16 @@ class StartCommands(Commands):
 
     def filestore(self):
         for fs,fs_name in zip(self.config[ConfigKeys.gcloud_filestore], self.config[ConfigKeys.gcloud_fs_mount]):
-            self.run_cmd("gcloud -q beta filestore instances create {filestore} --project={project} --zone={zone} --tier=STANDARD --file-share=name={name},capacity=1TB --network=name={vpc}".format(filestore = fs,
+            self.run_cmd("gcloud beta filestore instances create {filestore} --project={project} --location={zone} --tier=STANDARD --file-share=name={name},capacity=1TB --network=name={vpc}".format(filestore = fs,
                                                                                                                                                                                                      project = self.config[ConfigKeys.gcloud_project],
                                                                                                                                                                                                      zone = self.config[ConfigKeys.gcloud_zone],
                                                                                                                                                                                                      name=fs_name,
-                                                                                                                                                                                                     vpc = self.config[ConfigKeys.gcloud_vpc]))
+                                                                                                                                                                                                     vpc = self.config[ConfigKeys.gcloud_vpc]), verbose=True)
         # Get IP address of file storage
         for fs,fs_name in zip(self.config[ConfigKeys.gcloud_filestore], self.config[ConfigKeys.gcloud_fs_mount]):
-            ip = self.run_cmd("gcloud beta filestore instances describe {filestore} --project={project} --zone={zone}  --format='value(networks.ipAddresses[0])'".format(filestore = fs,
-                                                                                                                                                                         project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                                         zone = self.config[ConfigKeys.gcloud_zone]))
+            ip = self.run_cmd("gcloud filestore instances describe {filestore} --project={project} --zone={zone}  --format='value(networks.ipAddresses[0])'".format(filestore = fs,
+                                                                                                                                                                    project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                                                                    zone = self.config[ConfigKeys.gcloud_zone]))
             self.config["nfs_{}_ip".format(fs_name)] = ip
 
 
@@ -307,9 +313,9 @@ class StopCommands(Commands):
 
     def filestore(self):
         for fs in self.config[ConfigKeys.gcloud_filestore]:
-            self.run_cmd("gcloud -q beta filestore instances delete {fs} --project={project} --zone={zone}".format(fs = fs,
-                                                                                                                   project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                   zone = self.config[ConfigKeys.gcloud_zone]))
+            self.run_cmd("gcloud beta filestore instances delete {fs} --project={project} --location={zone}".format(fs = fs,
+                                                                                                                    project = self.config[ConfigKeys.gcloud_project],
+                                                                                                                    zone = self.config[ConfigKeys.gcloud_zone]), verbose=True)
 
     def stop_slurm(self):
         self.run_cmd("gcloud -q deployment-manager deployments --project={project} delete {deployment}".format(project = self.config[ConfigKeys.gcloud_project],
