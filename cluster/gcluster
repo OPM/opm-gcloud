@@ -170,14 +170,20 @@ class Config(object):
         if slurm_gcp_root:
             self.context[ConfigKeys.slurm_gcp_root] = slurm_gcp_root
 
-        print("-----------------------------------------------------------------")
+        print("---------------------------------------------------------------------------")
         for key in ConfigKeys.keys:
             if key in self.context:
                 value = self.context[key]
                 if value is None:
                     value = ""
-                print("{:16s}  : {}".format(key,value))
-        print("-----------------------------------------------------------------")
+
+                if key in ConfigKeys.env_variables:
+                    env_var = "[{}]".format(ConfigKeys.env_variables[key])
+                else:
+                    env_var = ""
+
+                print("{:20s}{:20s}  : {}".format(key,env_var,value))
+        print("---------------------------------------------------------------------------")
         self.validate()
 
 
