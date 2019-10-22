@@ -1,4 +1,22 @@
 #!/usr/bin/env python
+
+# Copyright 2019 Equinor ASA.
+#
+# This file is part of the Open Porous Media project (OPM).
+#
+# OPM is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# OPM is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with OPM.  If not, see <http://www.gnu.org/licenses/>.
+
 import subprocess
 import sys
 import os
@@ -247,7 +265,7 @@ class StartCommands(Commands):
 
     def fw(self):
         cmd_fmt = "gcloud -q compute --project={project} firewall-rules create slurm-fw-private --network {vpc} --allow tcp,udp,icmp --source-ranges 10.10.0.0/16"
-        self.run_cmd(fmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
+        self.run_cmd(cmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
                                     vpc = self.config[ConfigKeys.gcloud_vpc]))
 
         cmd_fmt = "gcloud -q compute --project={project} firewall-rules create slurm-fw-outside --network {vpc} --allow tcp:22,tcp:3389,icmp"
