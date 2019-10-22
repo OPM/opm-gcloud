@@ -234,35 +234,41 @@ class StartCommands(Commands):
 
 
     def vpc(self):
-        self.run_cmd("gcloud -q compute --project={project} networks create {vpc} --description=\"slurm network vpc\" --subnet-mode=custom".format( project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                    vpc = self.config[ConfigKeys.gcloud_vpc]))
+        cmd_fmt = "gcloud -q compute --project={project} networks create {vpc} --description=\"slurm network vpc\" --subnet-mode=custom"
+        self.run_cmd(cmd_fmt.format( project = self.config[ConfigKeys.gcloud_project],
+                                     vpc = self.config[ConfigKeys.gcloud_vpc]))
 
-        self.run_cmd("gcloud -q compute --project={project} networks subnets create {sub_vpc} --network={vpc} --region={region}  --range=10.10.0.0/16 --enable-private-ip-google-access".format( project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                                                                 sub_vpc = self.config[ConfigKeys.gcloud_sub_vpc],
-                                                                                                                                                                                                 vpc = self.config[ConfigKeys.gcloud_vpc],
-                                                                                                                                                                                                 region = self.config[ConfigKeys.gcloud_region] ))
+        cmd_fmt = "gcloud -q compute --project={project} networks subnets create {sub_vpc} --network={vpc} --region={region}  --range=10.10.0.0/16 --enable-private-ip-google-access"
+        self.run_cmd(cmd_fmt.format( project = self.config[ConfigKeys.gcloud_project],
+                                     sub_vpc = self.config[ConfigKeys.gcloud_sub_vpc],
+                                     vpc = self.config[ConfigKeys.gcloud_vpc],
+                                     region = self.config[ConfigKeys.gcloud_region] ))
 
 
     def fw(self):
-        self.run_cmd("gcloud -q compute --project={project} firewall-rules create slurm-fw-private --network {vpc} --allow tcp,udp,icmp --source-ranges 10.10.0.0/16".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                                             vpc = self.config[ConfigKeys.gcloud_vpc]))
+        cmd_fmt = "gcloud -q compute --project={project} firewall-rules create slurm-fw-private --network {vpc} --allow tcp,udp,icmp --source-ranges 10.10.0.0/16"
+        self.run_cmd(fmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
+                                    vpc = self.config[ConfigKeys.gcloud_vpc]))
 
-        self.run_cmd("gcloud -q compute --project={project} firewall-rules create slurm-fw-outside --network {vpc} --allow tcp:22,tcp:3389,icmp".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                          vpc = self.config[ConfigKeys.gcloud_vpc]))
+        cmd_fmt = "gcloud -q compute --project={project} firewall-rules create slurm-fw-outside --network {vpc} --allow tcp:22,tcp:3389,icmp"
+        self.run_cmd(cmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
+                                    vpc = self.config[ConfigKeys.gcloud_vpc]))
 
 
     def filestore(self):
         for fs,fs_name in zip(self.config[ConfigKeys.gcloud_filestore], self.config[ConfigKeys.gcloud_fs_mount]):
-            self.run_cmd("gcloud beta filestore instances create {filestore} --project={project} --location={zone} --tier=STANDARD --file-share=name={name},capacity=1TB --network=name={vpc}".format(filestore = fs,
-                                                                                                                                                                                                     project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                                                                     zone = self.config[ConfigKeys.gcloud_zone],
-                                                                                                                                                                                                     name=fs_name,
-                                                                                                                                                                                                     vpc = self.config[ConfigKeys.gcloud_vpc]), verbose=True)
+            cmd_fmt = "gcloud beta filestore instances create {filestore} --project={project} --location={zone} --tier=STANDARD --file-share=name={name},capacity=1TB --network=name={vpc}"
+            self.run_cmd(cmd_fmt.format(filestore = fs,
+                                        project = self.config[ConfigKeys.gcloud_project],
+                                        zone = self.config[ConfigKeys.gcloud_zone],
+                                        name=fs_name,
+                                        vpc = self.config[ConfigKeys.gcloud_vpc]), verbose=True)
         # Get IP address of file storage
         for fs,fs_name in zip(self.config[ConfigKeys.gcloud_filestore], self.config[ConfigKeys.gcloud_fs_mount]):
-            ip = self.run_cmd("gcloud filestore instances describe {filestore} --project={project} --zone={zone}  --format='value(networks.ipAddresses[0])'".format(filestore = fs,
-                                                                                                                                                                    project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                                    zone = self.config[ConfigKeys.gcloud_zone]))
+            cmd_fmt = "gcloud beta filestore instances describe {filestore} --project={project} --location={zone}  --format='value(networks.ipAddresses[0])'"
+            ip = self.run_cmd(cmd_fmt.format(filestore = fs,
+                                             project = self.config[ConfigKeys.gcloud_project],
+                                             zone = self.config[ConfigKeys.gcloud_zone]))
             self.config["nfs_{}_ip".format(fs_name)] = ip
 
 
@@ -279,9 +285,10 @@ class StartCommands(Commands):
                                              nfs_home_ip = self.config["nfs_home_ip"],
                                              nfs_apps_ip = self.config["nfs_apps_ip"]))
 
-        self.run_cmd("gcloud -q deployment-manager deployments --project={project} create {deployment} --config {config_file}".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                      deployment = self.config[ConfigKeys.slurm_deployment],
-                                                                                                                                      config_file = config_file))
+        cmd_fmt = "gcloud -q deployment-manager deployments --project={project} create {deployment} --config {config_file}"
+        self.run_cmd(cmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
+                                    deployment = self.config[ConfigKeys.slurm_deployment],
+                                    config_file = config_file))
 
 
 
@@ -296,30 +303,36 @@ class StartCommands(Commands):
 class StopCommands(Commands):
 
     def vpc(self):
-        self.run_cmd("gcloud -q compute --project={project} networks subnets delete {sub_vpc} --region={region}".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                        sub_vpc = self.config[ConfigKeys.gcloud_sub_vpc],
-                                                                                                                        region  = self.config[ConfigKeys.gcloud_region]))
+        cmd_fmt = "gcloud -q compute --project={project} networks subnets delete {sub_vpc} --region={region}"
+        self.run_cmd(cmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
+                                    sub_vpc = self.config[ConfigKeys.gcloud_sub_vpc],
+                                    region  = self.config[ConfigKeys.gcloud_region]))
 
-        self.run_cmd("gcloud -q compute --project={project} networks delete {vpc}".format(project=self.config[ConfigKeys.gcloud_project],
-                                                                                          vpc = self.config[ConfigKeys.gcloud_vpc]))
+        cmd_fmt = "gcloud -q compute --project={project} networks delete {vpc}"
+        self.run_cmd(cmd_fmt.format(project=self.config[ConfigKeys.gcloud_project],
+                                    vpc = self.config[ConfigKeys.gcloud_vpc]))
 
 
     def fw(self):
-        fwlist = self.run_cmd("gcloud -q compute --project={project} firewall-rules list --filter network={vpc} --sort-by priority --format='value(name)'".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                                                                  vpc = self.config[ConfigKeys.gcloud_vpc]))
+        cmd_fmt = "gcloud -q compute --project={project} firewall-rules list --filter network={vpc} --sort-by priority --format='value(name)'"
+        fwlist = self.run_cmd(cmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
+                                             vpc = self.config[ConfigKeys.gcloud_vpc]))
         for fw in fwlist.split():
-            self.run_cmd("gcloud -q compute --project={project} firewall-rules delete {fw}".format(fw = fw,
-                                                                                                   project = self.config[ConfigKeys.gcloud_project]))
+            cmd_fmt = "gcloud -q compute --project={project} firewall-rules delete {fw}"
+            self.run_cmd(cmd_fmt.format(fw = fw,
+                                        project = self.config[ConfigKeys.gcloud_project]))
 
     def filestore(self):
         for fs in self.config[ConfigKeys.gcloud_filestore]:
-            self.run_cmd("gcloud beta filestore instances delete {fs} --project={project} --location={zone}".format(fs = fs,
-                                                                                                                    project = self.config[ConfigKeys.gcloud_project],
-                                                                                                                    zone = self.config[ConfigKeys.gcloud_zone]), verbose=True)
+            cmd_fmt = "gcloud -q beta filestore instances delete {fs} --project={project} --location={zone}"
+            self.run_cmd(cmd_fmt.format(fs = fs,
+                                        project = self.config[ConfigKeys.gcloud_project],
+                                        zone = self.config[ConfigKeys.gcloud_zone]), verbose=True)
 
     def stop_slurm(self):
-        self.run_cmd("gcloud -q deployment-manager deployments --project={project} delete {deployment}".format(project = self.config[ConfigKeys.gcloud_project],
-                                                                                                               deployment = self.config[ConfigKeys.slurm_deployment]))
+        cmd_fmt = "gcloud -q deployment-manager deployments --project={project} delete {deployment}"
+        self.run_cmd(cmd_fmt.format(project = self.config[ConfigKeys.gcloud_project],
+                                    deployment = self.config[ConfigKeys.slurm_deployment]))
 
 
     def run(self):
